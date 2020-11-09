@@ -1,6 +1,6 @@
 <?php
+
 $steps = array(
     "" => "event_disable_expire"
 );
-include("shared/api_serverlogic/process.php");
-?>
+include("endpoints/api_serverlogic/process.php");
