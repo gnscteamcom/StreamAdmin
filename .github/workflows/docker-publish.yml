@@ -1,80 +1,96 @@
-name: Docker
+# Step 1: replace {EMAIL} with your email address (Used for SSL certs)
+# Step 2: replace {DOMAIN} with your domain (Example: streamadmin.madpeter.xyz)
+# Step 3: replace {MySQLRootPW} with a random password
+# Step 4: replace {MySQLDBPW} with a random password you want to use for logging in to phpmyadmin
+# Step 5: replace {MySQLDBUser} with the username you want to use for logging in to phpmyadmin
+# Step 6: replace {DBadminDomain} with the domain you wish to use to access phpmyadmin (Example: phpmyadmin.madpeter.xyz)
 
-on:
-  push:
-    # Publish `master` as Docker `latest` image.
-    branches:
-      - master
+version: '2'
+services:
+    proxy:
+        container_name: SA7Proxy
+        privileged: true
+        restart: always
+        image: jwilder/nginx-proxy:latest
+        ports:
+            - 80:80
+            - 443:443
+        volumes:
+            - streamadmin-certs:/etc/nginx/certs
+            - streamadmin-vhost:/etc/nginx/vhost.d
+            - streamadmin-html:/usr/share/nginx/html
+            - /var/run/docker.sock:/tmp/docker.sock:ro
 
-    # Publish `v1.2.3` tags as releases.
-    tags:
-      - v*
+    letsencrypt:
+        container_name: SA7letsencrypt
+        restart: always
+        image: jrcs/letsencrypt-nginx-proxy-companion:latest
+        environment:
+            NGINX_PROXY_CONTAINER: SA7Proxy
+            DEFAULT_EMAIL: '{EMAIL}'
+        depends_on:
+            - proxy
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock:ro
+            - streamadmin-certs:/etc/nginx/certs
+            - streamadmin-vhost:/etc/nginx/vhost.d
+            - streamadmin-html:/usr/share/nginx/html
+    app:
+        container_name: SA7Website
+        restart: always
+        image: madpeter/streamadmin_r7:latest
+        expose:
+            - 8881:80
+        links:
+            - proxy
+            - db
+            - redis
+        environment:
+            VIRTUAL_PORT: 8881
+            VIRTUAL_HOST: '{DOMAIN}'
+            LETSENCRYPT_HOST: '{DOMAIN}'
+            LETSENCRYPT_EMAIL: '{EMAIL}'
+            SITE_HOST: 'https://{DOMAIN}/'
+            SITE_TITLE: StreamAdmin
+            SITE_LANG: en
+            DB_HOST: db
+            DB_DATABASE: streamadmin
+            DB_USERNAME: '{MySQLDBUser}'
+            DB_PASSWORD: '{MySQLDBPW}'
+            REDIS_HOST: redis
+            SESSION_DRIVER: redis
+            CACHE_DRIVER: redis
+            INSTALL_OK: 0
 
-  # Run tests for any PRs.
-  pull_request:
+    db:
+        container_name: SA7Db
+        image: mariadb
+        restart: always
+        environment:
+            MYSQL_ROOT_PASSWORD: '{MySQLRootPW}'
+            MYSQL_USER: '{MySQLDBUser}'
+            MYSQL_PASSWORD: '{MySQLDBPW}'
+            MYSQL_DATABASE: streamadmin
+        volumes:
+            - streamadmin-db:/var/lib/mysql
 
-env:
-  # TODO: Change variable to your image's name.
-  IMAGE_NAME: image
+    phpmyadmin:
+        container_name: SA7PHPmyAdmin
+        environment:
+            PMA_HOST: db
+            VIRTUAL_PORT: 8882
+            VIRTUAL_HOST: '{DBadminDomain}'
+            LETSENCRYPT_HOST: '{DBadminDomain}'
+            LETSENCRYPT_EMAIL: '{EMAIL}'
+        image: 'phpmyadmin/phpmyadmin:latest'
+        expose:
+            - '8882:80'
+        links:
+            - proxy
+            - db
 
-jobs:
-  # Run tests.
-  # See also https://docs.docker.com/docker-hub/builds/automated-testing/
-  test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v2
-
-      - name: Run tests
-        run: |
-          if [ -f docker-compose.yml ]; then
-            docker-compose --file docker-compose.yml build
-            docker-compose --file docker-compose.yml run sut
-          else
-            docker build . --file Dockerfile
-          fi
-
-  # Push image to GitHub Packages.
-  # See also https://docs.docker.com/docker-hub/builds/
-  push:
-    # Ensure test job passes before pushing image.
-    needs: test
-
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v2
-
-      - name: Build image
-        run: docker build . --file Dockerfile --tag $IMAGE_NAME
-
-      - name: Log into registry
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login docker.pkg.github.com -u ${{ github.actor }} --password-stdin
-
-      - name: Push image
-        run: |
-          IMAGE_ID=docker.pkg.github.com/${{ github.repository }}/$IMAGE_NAME
-
-          # Change all uppercase to lowercase
-          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
-
-          # Strip git ref prefix from version
-          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
-
-          # Strip "v" prefix from tag name
-          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
-
-          # Use Docker `latest` tag convention
-          [ "$VERSION" == "master" ] && VERSION=latest
-
-          echo IMAGE_ID=$IMAGE_ID
-          echo VERSION=$VERSION
-
-          docker tag $IMAGE_NAME $IMAGE_ID:$VERSION
-          docker push $IMAGE_ID:$VERSION
+    redis:
+        container_name: SA7Redis
+        image: redis:4.0-alpine
+        expose:
+            - 16379:6379
